@@ -1,0 +1,609 @@
+<meta name='viewport' content='width=device-width, initial-scale=1'/><!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>App Overlay with Bluetooth</title>
+
+  <!-- Import the two fonts for the hybrid title -->
+  <link
+    href="https://fonts.googleapis.com/css2?family=Megrim&family=Metal+Mania&display=swap"
+    rel="stylesheet" />
+
+  <!-- Your existing stylesheet -->
+  <link rel="stylesheet" href="style.css">
+
+  <!-- Inline CSS for the hybrid title layering -->
+  <style>
+    .hybrid-title {
+      position: relative;
+      display: inline-block;
+      font-size: 2rem;   /* adjust size as needed */
+      line-height: 1;
+      margin-bottom: 20px;
+    }
+    .hybrid-title .metal {
+      font-family: 'Metal Mania', cursive;
+      color: #000;       /* the fill color */
+    }
+    .hybrid-title .megrim {
+      position: absolute;
+      top: 0; left: 0;
+      font-family: 'Megrim', cursive;
+      color: transparent;               /* hide fill */
+      -webkit-text-stroke: 2px #0f0;    /* wavy outline */
+      mix-blend-mode: multiply;         /* blend shapes */
+    }
+  </style>
+</head>
+<body>
+
+  <div id="mainContent">
+    <!-- Hybrid title -->
+    <h1 class="hybrid-title">
+      <span class="metal">Welcome to the Brainlink App</span>
+    </h1>
+
+    <!-- Open Overlay Button -->
+    <button id="openOverlayButton">Open Live EEG Overlay</button>
+
+    <!-- Saved Sessions -->
+    <div id="sessionList">
+      <h2>Saved Sessions</h2>
+      <ul id="sessions"></ul>
+    </div>
+  </div>
+
+  <!-- EEG Overlay -->
+  <div id="overlay" style="display: none;">
+    <h2>Live EEG Data</h2>
+
+    <div id="eegBars">
+      <div class="barContainer">
+        <div class="barLabel">Concentration</div>
+        <div class="bar concentrationBar" id="bar-concentration"></div>
+      </div>
+      <div class="barContainer">
+        <div class="barLabel">Gamma</div>
+        <div class="bar gammaBar" id="bar-gamma"></div>
+      </div>
+      <div class="barContainer">
+        <div class="barLabel">Theta</div>
+        <div class="bar thetaBar" id="bar-theta"></div>
+      </div>
+      <div class="barContainer">
+        <div class="barLabel">Alpha</div>
+        <div class="bar alphaBar" id="bar-alpha"></div>
+      </div>
+      <div class="barContainer">
+        <div class="barLabel">Beta</div>
+        <div class="bar betaBar" id="bar-beta"></div>
+      </div>
+    </div>
+
+    <p id="eegText">Waiting for EEG data...</p>
+
+    <!-- Session Label Input placed ABOVE buttons -->
+    <div id="sessionLabelContainer">
+      <input type="text" id="sessionLabel" placeholder="Session label">
+    </div>
+
+    <!-- Container for all buttons (close, bluetooth, recording) -->
+    <div id="buttonContainer">
+      <!-- Close Overlay Button -->
+      <button id="closeButton">✖</button>
+
+      <!-- Bluetooth Connect Button -->
+      <button id="connectBluetoothButton">
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100">
+          <line x1="25" y1="25" x2="75" y2="75" stroke="#1e69d2" stroke-width="5"/>
+          <line x1="75" y1="25" x2="25" y2="75" stroke="#1e69d2" stroke-width="5"/>
+          <line x1="50" y1="0" x2="50" y2="100" stroke="#1e69d2" stroke-width="5"/>
+          <line x1="75" y1="25" x2="50" y2="0" stroke="#1e69d2" stroke-width="5"/>
+          <line x1="75" y1="75" x2="50" y2="100" stroke="#1e69d2" stroke-width="5"/>
+        </svg>
+      </button>
+
+      <!-- Play and Stop Buttons -->
+      <button id="startRecordingButton">▶</button>
+      <button id="stopRecordingButton">■</button>
+    </div>
+  </div>
+
+  <script>
+    let isRecording = false;
+    let currentSession = [];
+    let recordingLabel = "";
+
+    // Update EEG bars and optionally record
+    function updateEEGBars(data) {
+      updateEEGDataText(data);
+      ['concentration','gamma','theta','alpha','beta'].forEach(key => {
+        updateBar('bar-' + key, data[key]);
+      });
+      if (isRecording) {
+        currentSession.push({ timestamp: Date.now(), ...data });
+      }
+    }
+
+    function updateBar(id, value) {
+      document.getElementById(id).style.width = Math.min(Math.max(value, 0), 100) + '%';
+    }
+
+    function updateEEGDataText(data) {
+      document.getElementById('eegText').textContent =
+        `Concentration: ${data.concentration} | Gamma: ${data.gamma} | Theta: ${data.theta} | Alpha: ${data.alpha} | Beta: ${data.beta}`;
+    }
+
+    function connectToBluetooth() {
+      if (!navigator.bluetooth) {
+        alert('Web Bluetooth API not supported by your browser.');
+        return;
+      }
+      navigator.bluetooth.requestDevice({
+        filters: [{ services: ['0000ffe0-0000-1000-8000-00805f9b34fb'] }]
+      })
+      .then(device => device.gatt.connect())
+      .then(server => server.getPrimaryService('0000ffe0-0000-1000-8000-00805f9b34fb'))
+      .then(service => service.getCharacteristic('0000ffe1-0000-1000-8000-00805f9b34fb'))
+      .then(characteristic => {
+        characteristic.startNotifications().then(() => {
+          characteristic.addEventListener('characteristicvaluechanged', event => {
+            const data = parseBrainlinkData(event.target.value);
+            updateEEGBars(data);
+          });
+        });
+      })
+      .catch(err => {
+        console.error('Bluetooth Error:', err);
+        updateEEGDataText({ concentration:0, gamma:0, theta:0, alpha:0, beta:0 });
+      });
+    }
+
+    function parseBrainlinkData(buffer) {
+      const arr = new Uint8Array(buffer.buffer);
+      let [concentration,gamma,theta,alpha,beta] = [0,0,0,0,0];
+      for (let i=0; i<arr.length; i++) {
+        if (arr[i]===0x04) concentration = arr[i+1];
+        if (arr[i]===0x83) {
+          gamma = arr[i+1];
+          theta = arr[i+2];
+          alpha = arr[i+3];
+          beta = arr[i+4];
+        }
+      }
+      return { concentration, gamma, theta, alpha, beta };
+    }
+
+    function saveSession(label, data) {
+      const sessions = JSON.parse(localStorage.getItem('eegSessions') || '[]');
+      sessions.push({ label, data });
+      localStorage.setItem('eegSessions', JSON.stringify(sessions));
+      loadSessions();
+    }
+
+    function loadSessions() {
+      const ul = document.getElementById('sessions');
+      ul.innerHTML = '';
+      const sessions = JSON.parse(localStorage.getItem('eegSessions') || '[]');
+      sessions.forEach((s,i) => {
+        const li = document.createElement('li');
+        li.textContent = `${s.label} (${s.data.length} entries) `;
+        const btn = document.createElement('button');
+        btn.textContent = 'Delete';
+        btn.addEventListener('click', () => deleteSession(i));
+        li.appendChild(btn);
+        ul.appendChild(li);
+      });
+    }
+
+    function deleteSession(idx) {
+      const sessions = JSON.parse(localStorage.getItem('eegSessions') || '[]');
+      sessions.splice(idx,1);
+      localStorage.setItem('eegSessions', JSON.stringify(sessions));
+      loadSessions();
+    }
+
+    function startRecording() {
+      const input = document.getElementById('sessionLabel');
+      recordingLabel = input.value.trim() || `Session ${new Date().toLocaleString()}`;
+      currentSession = [];
+      isRecording = true;
+      alert(`Recording started: ${recordingLabel}`);
+    }
+
+    function stopRecording() {
+      if (!isRecording) return;
+      saveSession(recordingLabel, currentSession);
+      isRecording = false;
+      alert(`Recording stopped and saved as: ${recordingLabel}`);
+    }
+
+    // Event listeners
+    document.getElementById('openOverlayButton').addEventListener('click', () => {
+      document.getElementById('overlay').style.display = 'block';
+    });
+    document.getElementById('closeButton').addEventListener('click', () => {
+      document.getElementById('overlay').style.display = 'none';
+    });
+    document.getElementById('connectBluetoothButton').addEventListener('click', connectToBluetooth);
+    document.getElementById('startRecordingButton').addEventListener('click', startRecording);
+    document.getElementById('stopRecordingButton').addEventListener('click', stopRecording);
+
+    window.addEventListener('load', loadSessions);
+  </script>
+</body>
+</html>
+```<style>/* style.css */
+
+body {
+    font-family: 'Metal Mania', 'Megrim', Arial, sans-serif;
+    margin: 0;
+    padding: 0;
+    background: #f2f2f2;
+    color: black; /* Ensures all text is black */
+}
+
+#mainContent {
+    padding: 20px;
+    text-align: left;
+}
+
+#mainContent h1 {
+    font-size: 20px; /* Adjust this value to make the title smaller */
+}
+
+#sessionControls {
+    margin-top: 20px;
+}
+
+#sessionControls input,
+#sessionControls button {
+    margin: 5px;
+    padding: 10px;
+    font-size: 14px;
+}
+
+#sessionList {
+    margin-top: 20px;
+    text-align: left;
+    padding: 0 20px;
+}
+
+#sessionList ul {
+    list-style-type: none;
+    padding: 0;
+}
+
+#sessionList li {
+    background: white;
+    margin-bottom: 10px;
+    padding: 10px;
+    border-radius: 6px;
+    box-shadow: 0px 0px 5px rgba(0, 0, 0, 0.1);
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+}
+
+#sessionList li button {
+    background-color: #ff3b30;
+    color: white;
+    border: none;
+    padding: 5px 10px;
+    cursor: pointer;
+    border-radius: 4px;
+    font-size: 12px;
+    transition: background-color 0.3s;
+}
+
+#sessionList li button:hover {
+    background-color: #e02d1b;
+}
+
+#overlay {
+    position: fixed;
+    top: 20px;
+    left: 20px;
+    background-color: white; /* Changed overlay background to white */
+    color: black; /* Ensures overlay text is black */
+    padding: 20px;
+    border-radius: 8px;
+    width: 250px;
+    box-shadow: 0px 0px 15px rgba(0, 0, 0, 0.4);
+    z-index: 1000;
+    display: none;
+}
+
+#overlay h2 {
+    margin: 0 0 15px;
+    font-size: 20px;
+}
+
+#overlay p {
+    margin: 10px 0;
+    font-size: 14px;
+}
+
+#eegBars {
+    margin-bottom: 15px;
+}
+
+.barContainer {
+    display: flex;
+    align-items: center;
+    margin: 10px 0;
+}
+
+.barLabel {
+    width: 80px;
+    font-size: 12px;
+    margin-right: 10px;
+}
+
+/* EEG Bar Colors */
+.concentrationBar { background-color: purple; }
+.gammaBar         { background-color: green; }
+.thetaBar         { background-color: blue; }
+.alphaBar         { background-color: red; }
+.betaBar          { background-color: orange; }
+
+.bar {
+    height: 10px;
+    width: 50%;
+    transition: width 0.3s ease;
+    border-radius: 4px;
+}
+
+#closeButton {
+    background-color: black;
+    border: 2px solid #FF0000;
+    padding: 5px 10px;
+    margin: 5px 0 0 0;
+    color: red;
+    font-size: 18px;
+    cursor: pointer;
+    border-radius: 50%;
+    width: 50px;
+    height: 50px;
+    text-align: center;
+    line-height: 30px;
+    position: absolute;
+    top: 1px;
+    right: 175px;
+}
+
+#closeButton:hover {
+    background-color: black;
+}
+
+#connectBluetoothButton {
+    background-color: black;
+    border: 2px solid #1e69d2;
+    padding: 10px;
+    margin: 5px 0 0 65px;
+    cursor: pointer;
+    display: inline-flex;
+    justify-content: center;
+    align-items: center;
+    width: 50px;
+    height: 50px;
+    border-radius: 50%;
+    position: relative;
+}
+
+#connectBluetoothButton svg {
+    width: 60%;
+    height: 60%;
+    fill: none;
+    stroke: #1e69d2;
+    stroke-width: 4;
+}
+
+#connectBluetoothButton:hover {
+    background-color: #333333;
+}
+
+#buttonContainer {
+    display: flex;
+    justify-content: space-evenly;
+    align-items: center;
+    position: relative;
+    width: 100%;
+}
+
+#startRecordingButton,
+#stopRecordingButton {
+    width: 50px;
+    height: 50px;
+    border-radius: 50%;
+    font-size: 24px;
+    background-color: black;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    cursor: pointer;
+}
+
+#startRecordingButton {
+    border: 2px solid #4caf50;
+    color: green;
+}
+
+#stopRecordingButton {
+    border: 2px solid #f44336;
+    color: red;
+}
+
+#startRecordingButton:hover,
+#stopRecordingButton:hover {
+    background-color: #1558b0;
+}
+</style><script>let isRecording = false;
+let currentSession = [];
+let recordingLabel = "";
+
+// Function to update the EEG data bars
+function updateEEGBars(data) {
+    updateEEGDataText(data);
+
+    updateBar("bar-concentration", data.concentration);
+    updateBar("bar-gamma", data.gamma);
+    updateBar("bar-theta", data.theta);
+    updateBar("bar-alpha", data.alpha);
+    updateBar("bar-beta", data.beta);
+
+    if (isRecording) {
+        currentSession.push({
+            timestamp: Date.now(),
+            ...data
+        });
+    }
+}
+
+// Update a single bar's width
+function updateBar(id, value) {
+    const bar = document.getElementById(id);
+    bar.style.width = Math.min(Math.max(value, 0), 100) + "%"; // Clamp between 0-100%
+}
+
+// Update text below bars
+function updateEEGDataText(data) {
+    const eegText = document.getElementById("eegText");
+    eegText.textContent = `Concentration: ${data.concentration} | Gamma: ${data.gamma} | Theta: ${data.theta} | Alpha: ${data.alpha} | Beta: ${data.beta}`;
+}
+
+// Connect to Bluetooth device and fetch EEG data
+function connectToBluetooth() {
+    if (!navigator.bluetooth) {
+        alert('Web Bluetooth API not supported by your browser.');
+        return;
+    }
+
+    navigator.bluetooth.requestDevice({
+        filters: [{
+            services: ['0000ffe0-0000-1000-8000-00805f9b34fb'] // Brainlink's typical service UUID
+        }]
+    })
+    .then(device => device.gatt.connect())
+    .then(server => server.getPrimaryService('0000ffe0-0000-1000-8000-00805f9b34fb')) // Same service UUID
+    .then(service => service.getCharacteristic('0000ffe1-0000-1000-8000-00805f9b34fb')) // Brainlink's notify characteristic
+    .then(characteristic => {
+        characteristic.startNotifications().then(() => {
+            characteristic.addEventListener('characteristicvaluechanged', event => {
+                let eegDataRaw = event.target.value;
+                let parsedData = parseBrainlinkData(eegDataRaw);
+                updateEEGBars(parsedData);
+            });
+        });
+    })
+    .catch(error => {
+        console.error('Bluetooth Error:', error);
+        updateEEGDataText({ concentration: 0, gamma: 0, theta: 0, alpha: 0, beta: 0 });
+    });
+}
+
+// Dummy parser — you must adjust this based on your Brainlink data format
+function parseBrainlinkData(buffer) {
+    let concentration = 0;
+    let gamma = 0;
+    let theta = 0;
+    let alpha = 0;
+    let beta = 0;
+
+    let data = new Uint8Array(buffer.buffer);
+
+    for (let i = 0; i < data.length; i++) {
+        if (data[i] === 0x04) { // Attention
+            concentration = data[i + 1];
+        }
+        if (data[i] === 0x83) { // EEG data (delta, theta, alpha, beta, gamma, etc.)
+            gamma = data[i + 1];
+            theta = data[i + 2];
+            alpha = data[i + 3];
+            beta = data[i + 4];
+        }
+    }
+
+    return {
+        concentration: concentration,
+        gamma: gamma,
+        theta: theta,
+        alpha: alpha,
+        beta: beta
+    };
+}
+
+// Save the current session to localStorage
+function saveSession(label, data) {
+    const sessions = JSON.parse(localStorage.getItem('eegSessions') || '[]');
+    sessions.push({ label, data });
+    localStorage.setItem('eegSessions', JSON.stringify(sessions));
+    loadSessions();
+}
+
+// Load sessions from localStorage
+function loadSessions() {
+    const sessionList = document.getElementById("sessions");
+    sessionList.innerHTML = "";
+
+    const sessions = JSON.parse(localStorage.getItem('eegSessions') || '[]');
+    sessions.forEach((session, index) => {
+        const li = document.createElement("li");
+        li.textContent = `${session.label} (${session.data.length} entries)`;
+
+        // Add delete button to each session
+        const deleteButton = document.createElement("button");
+        deleteButton.textContent = "Delete";
+        deleteButton.addEventListener("click", () => deleteSession(index));
+        li.appendChild(deleteButton);
+
+        sessionList.appendChild(li);
+    });
+}
+
+// Delete a session
+function deleteSession(index) {
+    const sessions = JSON.parse(localStorage.getItem('eegSessions') || '[]');
+    sessions.splice(index, 1); // Remove session from the array
+    localStorage.setItem('eegSessions', JSON.stringify(sessions));
+    loadSessions(); // Reload the sessions list
+}
+
+// Start recording session
+function startRecording() {
+    const labelInput = document.getElementById("sessionLabel");
+    recordingLabel = labelInput.value.trim() || `Session ${new Date().toLocaleString()}`;
+    currentSession = [];
+    isRecording = true;
+    alert(`Recording started: ${recordingLabel}`);
+}
+
+// Stop recording session
+function stopRecording() {
+    if (isRecording) {
+        saveSession(recordingLabel, currentSession);
+        isRecording = false;
+        alert(`Recording stopped and saved as: ${recordingLabel}`);
+    }
+}
+
+// Button event listeners
+document.getElementById("closeButton").addEventListener("click", function() {
+    document.getElementById("overlay").style.display = "none";
+});
+
+document.getElementById("connectBluetoothButton").addEventListener("click", connectToBluetooth);
+
+document.getElementById("openOverlayButton").addEventListener("click", function() {
+    document.getElementById("overlay").style.display = "block";
+});
+
+document.getElementById("startRecordingButton").addEventListener("click", startRecording);
+
+document.getElementById("stopRecordingButton").addEventListener("click", stopRecording);
+
+// On load
+window.addEventListener("load", loadSessions);
+
+</script>
